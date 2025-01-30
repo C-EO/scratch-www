@@ -8,7 +8,7 @@ const PropTypes = require('prop-types');
 const connect = require('react-redux').connect;
 const injectIntl = require('react-intl').injectIntl;
 const parser = require('scratch-parser');
-const queryString = require('query-string');
+const queryString = require('query-string').default;
 
 const api = require('../../lib/api');
 const Page = require('../../components/page/www/page.jsx');
@@ -34,12 +34,63 @@ const projectCommentActions = require('../../redux/project-comment-actions.js');
 
 const frameless = require('../../lib/frameless');
 
-const GUI = require('scratch-gui');
+const GUI = require('@scratch/scratch-gui');
 const IntlGUI = injectIntl(GUI.default);
 
 const localStorageAvailable = 'localStorage' in window && window.localStorage !== null;
 
 const xhr = require('xhr');
+const {useEffect, useState} = require('react');
+const EditorJourney = require('../../components/journeys/editor-journey/editor-journey.jsx');
+const {usePrevious} = require('react-use');
+const TutorialsHighlight = require('../../components/journeys/tutorials-highlight/tutorials-highlight.jsx');
+const {triggerAnalyticsEvent, sendUserProperties, shouldDisplayOnboarding} = require('../../lib/onboarding.js');
+
+const IntlGUIWithProjectHandler = ({...props}) => {
+    const [showJourney, setShowJourney] = useState(false);
+    const [canViewTutorialsHighlight, setCanViewTutorialsHighlight] = useState(false);
+    const prevProjectId = usePrevious(props.projectId);
+
+    useEffect(() => {
+        const isTutorialOpen = !!queryString.parse(location.search).tutorial;
+
+        if (
+            (prevProjectId === 0 || prevProjectId === '0') &&
+            props.projectId &&
+            props.projectId !== '0' &&
+            !isTutorialOpen &&
+            shouldDisplayOnboarding(props.user, props.permissions)
+        ) {
+            setShowJourney(true);
+        }
+    }, [props.projectId, prevProjectId, props.user, props.permissions]);
+
+    return (
+        <>
+            <IntlGUI {...props} />
+            {showJourney && (
+                <EditorJourney
+                    onActivateDeck={props.onActivateDeck}
+                    setCanViewTutorialsHighlight={setCanViewTutorialsHighlight}
+                    setShowJourney={setShowJourney}
+                />
+            )}
+            {canViewTutorialsHighlight && (
+                <TutorialsHighlight
+                    setCanViewTutorialsHighlight={setCanViewTutorialsHighlight}
+                />
+            )}
+        </>
+    );
+};
+
+IntlGUIWithProjectHandler.propTypes = {
+    ...GUI.propTypes,
+    user: PropTypes.shape({
+        id: PropTypes.number
+    }),
+    permissions: PropTypes.object
+};
 
 class Preview extends React.Component {
     constructor (props) {
@@ -202,6 +253,10 @@ class Preview extends React.Component {
                 this.state.projectId,
                 false // Do not show cloud/username alerts again
             );
+        }
+
+        if (!prevProps.user.id && this.props.user.id && this.props.permissions) {
+            sendUserProperties(this.props.user, this.props.permissions);
         }
     }
     componentWillUnmount () {
@@ -488,6 +543,15 @@ class Preview extends React.Component {
         if (!this.state.greenFlagRecorded) {
             this.props.logProjectView(this.props.projectInfo.id, this.props.authorUsername, this.props.user.token);
         }
+
+        const showJourney = queryString.parse(location.search, {parseBooleans: true}).showJourney;
+        if (showJourney && shouldDisplayOnboarding(this.props.user, this.props.permissions)) {
+            triggerAnalyticsEvent({
+                event: 'tutorial-played',
+                playedProject: this.props.projectInfo.title
+            });
+        }
+
         this.setState({
             showUsernameBlockAlert: false,
             showCloudDataAlert: false,
@@ -599,6 +663,14 @@ class Preview extends React.Component {
         }
     }
     handleRemix () {
+        const showJourney = queryString.parse(location.search, {parseBooleans: true}).showJourney;
+        if (showJourney && shouldDisplayOnboarding(this.props.user, this.props.permissions)) {
+            triggerAnalyticsEvent({
+                event: 'tutorial-remixed',
+                remixedProject: this.props.projectInfo.title
+            });
+        }
+
         // Update the state first before starting the remix to show spinner
         this.setState({isRemixing: true}, () => {
             this.props.remixProject();
@@ -667,6 +739,7 @@ class Preview extends React.Component {
             const parts = window.location.pathname.toLowerCase()
                 .split('/')
                 .filter(Boolean);
+            const queryParams = location.search;
             let newUrl;
             if (projectId === '0') {
                 newUrl = `/${parts[0]}/editor`;
@@ -678,7 +751,7 @@ class Preview extends React.Component {
             history.pushState(
                 {projectId: projectId},
                 {projectId: projectId},
-                newUrl
+                `${newUrl}${queryParams}`
             );
             if (callback) callback();
         });
@@ -786,6 +859,7 @@ class Preview extends React.Component {
                             moreCommentsToLoad={this.props.moreCommentsToLoad}
                             originalInfo={this.props.original}
                             parentInfo={this.props.parent}
+                            permissions={this.props.permissions}
                             projectHost={this.props.projectHost}
                             projectId={this.state.projectId}
                             projectInfo={this.props.projectInfo}
@@ -802,7 +876,9 @@ class Preview extends React.Component {
                             showUsernameBlockAlert={this.state.showUsernameBlockAlert}
                             singleCommentId={this.state.singleCommentId}
                             socialOpen={this.state.socialOpen}
+                            user={this.props.user}
                             userOwnsProject={this.props.userOwnsProject}
+                            userUsesParentEmail={this.props.userUsesParentEmail}
                             visibilityInfo={this.props.visibilityInfo}
                             onAddComment={this.handleAddComment}
                             onAddToStudioClicked={this.handleAddToStudioClick}
@@ -841,7 +917,7 @@ class Preview extends React.Component {
                     </Page> :
                     <React.Fragment>
                         {showGUI && (
-                            <IntlGUI
+                            <IntlGUIWithProjectHandler
                                 assetHost={this.props.assetHost}
                                 authorId={this.props.authorId}
                                 authorThumbnailUrl={this.props.authorThumbnailUrl}
@@ -879,6 +955,9 @@ class Preview extends React.Component {
                                 onUpdateProjectId={this.handleUpdateProjectId}
                                 onUpdateProjectThumbnail={this.props.handleUpdateProjectThumbnail}
                                 onUpdateProjectTitle={this.handleUpdateProjectTitle}
+                                user={this.props.user}
+                                permissions={this.props.permissions}
+                                onActivateDeck={this.props.onActivateDeck}
                             />
                         )}
                         {this.props.registrationOpen && (
@@ -956,7 +1035,9 @@ Preview.propTypes = {
     lovedLoaded: PropTypes.bool,
     moreCommentsToLoad: PropTypes.bool,
     original: projectShape,
+    onActivateDeck: PropTypes.func,
     parent: projectShape,
+    permissions: PropTypes.object,
     playerMode: PropTypes.bool,
     projectHost: PropTypes.string.isRequired,
     projectInfo: projectShape,
@@ -991,6 +1072,7 @@ Preview.propTypes = {
         classroomId: PropTypes.string
     }),
     userOwnsProject: PropTypes.bool,
+    userUsesParentEmail: PropTypes.bool,
     userPresent: PropTypes.bool,
     visibilityInfo: PropTypes.shape({
         censored: PropTypes.bool,
@@ -1037,7 +1119,8 @@ const mapStateToProps = state => {
         state.session.session.flags.has_outstanding_email_confirmation &&
         state.session.session.flags.confirm_email_banner;
     const isTotallyNormal = state.session.session.flags && selectIsTotallyNormal(state);
-    
+    const userUsesParentEmail = state.session.session.flags && state.session.session.flags.with_parent_email;
+
     // if we don't have projectInfo, assume it's shared until we know otherwise
     const isShared = !projectInfoPresent || state.preview.projectInfo.is_published;
 
@@ -1076,6 +1159,7 @@ const mapStateToProps = state => {
         moreCommentsToLoad: state.comments.moreCommentsToLoad,
         original: state.preview.original,
         parent: state.preview.parent,
+        permissions: state.permissions,
         playerMode: state.scratchGui.mode.isPlayerOnly,
         projectInfo: state.preview.projectInfo,
         projectNotAvailable: state.preview.projectNotAvailable,
@@ -1088,6 +1172,7 @@ const mapStateToProps = state => {
         useScratch3Registration: state.navigation.useScratch3Registration,
         user: state.session.session.user,
         userOwnsProject: userOwnsProject,
+        userUsesParentEmail: userUsesParentEmail,
         userPresent: userPresent,
         visibilityInfo: state.preview.visibilityInfo
     };
@@ -1207,6 +1292,9 @@ const mapDispatchToProps = dispatch => ({
     },
     setFullScreen: fullscreen => {
         dispatch(GUI.setFullScreen(fullscreen));
+    },
+    onActivateDeck: id => {
+        dispatch(GUI.activateDeck(id));
     }
 });
 
